@@ -888,8 +888,8 @@ YBCStatus YBCPgCommitTransaction() {
   return ToYBCStatus(pgapi->CommitTransaction());
 }
 
-YBCStatus YBCPgAbortTransaction() {
-  return ToYBCStatus(pgapi->AbortTransaction());
+void YBCPgAbortTransaction() {
+  pgapi->AbortTransaction();
 }
 
 YBCStatus YBCPgSetTransactionIsolationLevel(int isolation) {
@@ -908,8 +908,12 @@ YBCStatus YBCPgEnterSeparateDdlTxnMode() {
   return ToYBCStatus(pgapi->EnterSeparateDdlTxnMode());
 }
 
-YBCStatus YBCPgExitSeparateDdlTxnMode(bool success) {
-  return ToYBCStatus(pgapi->ExitSeparateDdlTxnMode(success));
+YBCStatus YBCPgExitSeparateDdlTxnMode() {
+  return ToYBCStatus(pgapi->ExitSeparateDdlTxnMode());
+}
+
+void YBCPgClearSeparateDdlTxnMode() {
+  pgapi->ClearSeparateDdlTxnMode();
 }
 
 YBCStatus YBCPgSetActiveSubTransaction(uint32_t id) {
@@ -1022,6 +1026,9 @@ bool YBCPgIsYugaByteEnabled() {
 }
 
 void YBCSetTimeout(int timeout_ms, void* extra) {
+  if (!pgapi) {
+    return;
+  }
   const auto default_client_timeout_ms =
       (FLAGS_ysql_client_read_write_timeout_ms < 0
            ? std::max(FLAGS_client_read_write_timeout_ms, 600000)

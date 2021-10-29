@@ -91,6 +91,8 @@ void YBCAssignTransactionPriorityUpperBound(double newval, void* extra) {
   DCHECK_LE(txn_priority_regular_upper_bound, txn_priority_highpri_lower_bound);
 }
 
+int* YBCStatementTimeoutPtr = nullptr;
+
 }
 
 using namespace std::literals;
@@ -120,9 +122,14 @@ DEFINE_int32(pg_yb_session_timeout_ms, kDefaultPgYbSessionTimeoutMs,
 std::shared_ptr<yb::client::YBSession> BuildSession(
     yb::client::YBClient* client,
     const scoped_refptr<ClockBase>& clock) {
+  int statement_timeout = YBCStatementTimeoutPtr ? *YBCStatementTimeoutPtr : 0;
+  int session_timeout = FLAGS_pg_yb_session_timeout_ms;
+  if (statement_timeout > 0 && statement_timeout < session_timeout) {
+    session_timeout = statement_timeout;
+  }
   auto session = std::make_shared<YBSession>(client, clock);
   session->SetForceConsistentRead(client::ForceConsistentRead::kTrue);
-  session->SetTimeout(MonoDelta::FromMilliseconds(FLAGS_pg_yb_session_timeout_ms));
+  session->SetTimeout(MonoDelta::FromMilliseconds(session_timeout));
   return session;
 }
 
@@ -349,26 +356,25 @@ Status PgTxnManager::CommitTransaction() {
   return status;
 }
 
-Status PgTxnManager::AbortTransaction() {
+void PgTxnManager::AbortTransaction() {
   // If a DDL operation during a DDL txn fails the txn will be aborted before we get here.
   // However if there are failures afterwards (i.e. during COMMIT or catalog version increment),
   // then we might get here with a ddl_txn_. Clean it up in that case.
   if (ddl_txn_) {
-    RETURN_NOT_OK(ExitSeparateDdlTxnMode(false));
+    ClearSeparateDdlTxnMode();
   }
 
   if (!txn_in_progress_) {
-    return Status::OK();
+    return;
   }
   if (!txn_) {
     // This was a read-only transaction, nothing to commit.
     ResetTxnAndSession();
-    return Status::OK();
+    return;
   }
   // TODO: how do we report errors if the transaction has already committed?
   txn_->Abort();
   ResetTxnAndSession();
-  return Status::OK();
 }
 
 // TODO: dedup with similar logic in CQLServiceImpl.
@@ -427,19 +433,24 @@ Status PgTxnManager::EnterSeparateDdlTxnMode() {
   return Status::OK();
 }
 
-Status PgTxnManager::ExitSeparateDdlTxnMode(bool is_success) {
-  VLOG_TXN_STATE(2) << "is_success=" << is_success;
+Status PgTxnManager::ExitSeparateDdlTxnMode() {
+  VLOG_TXN_STATE(2);
   RSTATUS_DCHECK(
       ddl_txn_ != nullptr,
       IllegalState, "ExitSeparateDdlTxnMode called when not in a DDL transaction");
-  if (is_success) {
-    RETURN_NOT_OK(ddl_txn_->CommitFuture().get());
-  } else {
+  RETURN_NOT_OK(ddl_txn_->CommitFuture().get());
+  ddl_txn_.reset();
+  ddl_session_.reset();
+  return Status::OK();
+}
+
+void PgTxnManager::ClearSeparateDdlTxnMode() {
+  VLOG_TXN_STATE(2);
+  if (ddl_txn_) {
     ddl_txn_->Abort();
   }
   ddl_txn_.reset();
   ddl_session_.reset();
-  return Status::OK();
 }
 
 std::string PgTxnManager::TxnStateDebugStr() const {

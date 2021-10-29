@@ -114,6 +114,25 @@ CREATE INDEX foo_idx on testschema.foo(i) TABLESPACE regress_tblspace;
 SELECT relname, spcname FROM pg_catalog.pg_tablespace t, pg_catalog.pg_class c
     where c.reltablespace = t.oid AND c.relname = 'foo_idx';
 
+-- partitioned table
+CREATE TABLE testschema.part (a int) PARTITION BY LIST (a);
+CREATE TABLE testschema.part12 PARTITION OF testschema.part FOR VALUES IN(1,2) PARTITION BY LIST (a) TABLESPACE regress_tblspace;
+CREATE TABLE testschema.part12_1 PARTITION OF testschema.part12 FOR VALUES IN (1);
+CREATE TABLE testschema.part12_2 PARTITION OF testschema.part12 FOR VALUES IN (2) TABLESPACE pg_default;
+-- Ensure part12_1 defaulted to regress_tblspace.
+SELECT relname, spcname FROM pg_catalog.pg_class c
+    LEFT JOIN pg_catalog.pg_tablespace t ON c.reltablespace = t.oid
+    where c.relname LIKE 'part%' order by relname;
+/*
+ALTER TABLE testschema.part12 SET TABLESPACE pg_default;
+CREATE TABLE testschema.part12_2 PARTITION OF testschema.part12 FOR VALUES IN (2);
+-- Ensure part12_1 defaulted to regress_tblspace and part12_2 defaulted to pg_default.
+SELECT relname, spcname FROM pg_catalog.pg_class c
+    LEFT JOIN pg_catalog.pg_tablespace t ON c.reltablespace = t.oid
+    where c.relname LIKE 'part%' order by relname;
+*/
+DROP TABLE testschema.part;
+
 -- partitioned index
 CREATE TABLE testschema.part (a int) PARTITION BY LIST (a);
 CREATE TABLE testschema.part1 PARTITION OF testschema.part FOR VALUES IN (1);
@@ -237,7 +256,10 @@ DROP DATABASE colocation_test;
 
 -- Fail, cannot set tablespaces for temp tables.
 CREATE TEMPORARY TABLE temptest (a INT) TABLESPACE x;
+-- Verify that tablespaces cannot be set on partitioned tables.
+CREATE TABLE list_partitioned (partkey char) PARTITION BY LIST(partkey) TABLESPACE x;
 -- Cleanup.
+DROP TABLE list_partitioned;
 DROP TABLESPACE x;
 
 /*
@@ -274,3 +296,5 @@ EXPLAIN (COSTS OFF) SELECT * FROM foo WHERE id = 5;
 DROP TABLE foo;
 DROP TABLESPACE far;
 DROP TABLESPACE near;
+DROP TABLESPACE regionlocal;
+DROP TABLESPACE cloudlocal;

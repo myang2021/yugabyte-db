@@ -74,6 +74,15 @@ extern uint64_t YBGetActiveCatalogCacheVersion();
 
 extern void YBResetCatalogVersion();
 
+typedef enum GeolocationDistance {
+    ZONE_LOCAL,
+    REGION_LOCAL,
+    CLOUD_LOCAL,
+    INTER_CLOUD,
+    UNKNOWN_DISTANCE
+} GeolocationDistance;
+
+extern GeolocationDistance get_tablespace_distance (Oid tablespaceoid);
 /*
  * Checks whether YugaByte functionality is enabled within PostgreSQL.
  * This relies on pgapi being non-NULL, so probably should not be used
@@ -266,6 +275,12 @@ extern void YBCRollbackSubTransaction(SubTransactionId id);
 extern bool YBIsPgLockingEnabled();
 
 /*
+ * Get the type ID of a real or virtual attribute (column).
+ * Returns InvalidOid if the attribute number is invalid.
+ */
+extern Oid GetTypeId(int attrNum, TupleDesc tupleDesc);
+
+/*
  * Return a string representation of the given type id, or say it is unknown.
  * What is returned is always a static C string constant.
  */
@@ -380,6 +395,11 @@ extern bool yb_enable_create_with_table_oid;
 extern int yb_index_state_flags_update_delay;
 
 //------------------------------------------------------------------------------
+// GUC variables needed by YB via their YB pointers.
+extern int StatementTimeout;
+extern int *YBCStatementTimeoutPtr;
+
+//------------------------------------------------------------------------------
 // YB Debug utils.
 
 /**
@@ -435,8 +455,7 @@ bool YBIsInitDbAlreadyDone();
 
 int YBGetDdlNestingLevel();
 void YBIncrementDdlNestingLevel();
-void YBDecrementDdlNestingLevel(bool success,
-                                bool is_catalog_version_increment,
+void YBDecrementDdlNestingLevel(bool is_catalog_version_increment,
                                 bool is_breaking_catalog_change);
 bool IsTransactionalDdlStatement(PlannedStmt *pstmt,
                                  bool *is_catalog_version_increment,
@@ -492,10 +511,28 @@ bool YBIsCollationValidNonC(Oid collation_id);
  * for the column string value.
  */
 Oid YBEncodingCollation(YBCPgStatement handle, int attr_num, Oid attcollation);
- 
+
 /*
  * Check whether the user ID is of a user who has the yb_extension role.
  */
 bool IsYbExtensionUser(Oid member);
+
+/*
+ * Check whether the user ID is of a user who has the yb_fdw role.
+ */
+bool IsYbFdwUser(Oid member);
+
+/*
+ * Array of IDs of non-immutable functions that do not perform any database
+ * lookups or writes. When these functions are used in an INSERT/UPDATE/DELETE
+ * statement, they will not cause the actual modify statement to become a
+ * cross shard operation.
+ */
+extern const uint32 yb_funcs_safe_for_modify_fast_path[];
+
+/*
+ * Number of functions in 'yb_funcs_safe_for_modify_fast_path' above.
+ */
+extern const int yb_funcs_safe_for_modify_fast_path_count;
 
 #endif /* PG_YB_UTILS_H */

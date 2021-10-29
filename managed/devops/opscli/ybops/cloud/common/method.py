@@ -613,7 +613,8 @@ class CronCheckMethod(AbstractInstancesMethod):
 
 class ConfigureInstancesMethod(AbstractInstancesMethod):
     VALID_PROCESS_TYPES = ['master', 'tserver']
-    CERT_ROTATE_ACTIONS = ['APPEND_NEW_ROOT_CERT', 'ROTATE_CERTS', 'REMOVE_OLD_ROOT_CERT']
+    CERT_ROTATE_ACTIONS = ['APPEND_NEW_ROOT_CERT', 'ROTATE_CERTS',
+                           'REMOVE_OLD_ROOT_CERT', 'UPDATE_CERT_DIRS']
 
     def __init__(self, base_command):
         super(ConfigureInstancesMethod, self).__init__(base_command, "configure")
@@ -628,6 +629,7 @@ class ConfigureInstancesMethod(AbstractInstancesMethod):
         self.parser.add_argument('--extra_gflags', default=None)
         self.parser.add_argument('--gflags', default=None)
         self.parser.add_argument('--replace_gflags', action="store_true")
+        self.parser.add_argument('--add_default_gflags', default=None)
         self.parser.add_argument('--gflags_to_remove', default=None)
         self.parser.add_argument('--master_addresses_for_tserver')
         self.parser.add_argument('--master_addresses_for_master')
@@ -723,6 +725,9 @@ class ConfigureInstancesMethod(AbstractInstancesMethod):
 
         if args.package is not None:
             self.extra_vars["package"] = args.package
+
+        if args.add_default_gflags is not None:
+            self.extra_vars["add_default_gflags"] = args.add_default_gflags.strip()
 
         if args.extra_gflags is not None:
             self.extra_vars["extra_gflags"] = json.loads(args.extra_gflags)

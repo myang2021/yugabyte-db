@@ -1480,7 +1480,7 @@ decide_whether_to_use_ninja() {
       if [[ $BUILD_ROOT == *-ninja ]]; then
         export YB_USE_NINJA=1
       fi
-    elif command -v ninja || [[ -x /usr/local/bin/ninja ]]; then
+    elif command -v ninja >/dev/null || [[ -x /usr/local/bin/ninja ]]; then
       export YB_USE_NINJA=1
     elif using_linuxbrew; then
       local yb_ninja_path_candidate=$YB_LINUXBREW_DIR/bin/ninja
@@ -1930,11 +1930,13 @@ find_or_download_ysql_snapshots() {
   # (disabling a code checker error about a singular loop iteration)
   # shellcheck disable=SC2043
   for ver in "2.0.9.0"; do
-    local name="${prefix}_${ver}"
-    if [[ ! -d "$YSQL_SNAPSHOTS_DIR_PARENT/$name" ]]; then
-      local url="${repo_url}/releases/download/v${ver}/${name}.tar.gz"
-      download_and_extract_archive "$url" "$YSQL_SNAPSHOTS_DIR_PARENT"
-    fi
+    for bt in "release" "debug"; do
+      local name="${prefix}_${ver}_${bt}"
+      if [[ ! -d "$YSQL_SNAPSHOTS_DIR_PARENT/$name" ]]; then
+        local url="${repo_url}/releases/download/v${ver}/${name}.tar.gz"
+        download_and_extract_archive "$url" "$YSQL_SNAPSHOTS_DIR_PARENT"
+      fi
+    done
   done
 }
 
@@ -2431,6 +2433,35 @@ set_prebuilt_thirdparty_url() {
       log "YB_THIRDPARTY_URL is already set to '$YB_THIRDPARTY_URL', not trying to set it" \
           "automatically."
     fi
+  fi
+}
+
+check_arc_wrapper() {
+  if is_jenkins || [[ ${YB_SKIP_ARC_WRAPPER_CHECK:-0} == "1" ]]; then
+    return
+  fi
+  if [[ -f $HOME/.yb_build_env_bashrc ]]; then
+    # This is a Yugabyte workstation or dev server.
+    local arc_path
+    set +e
+    arc_path=$( which arc )
+    set -e
+    if [[ ! -f $arc_path ]]; then
+      # OK if arc is not found. Then people cannot "arc land" changes that do not pass tests.
+      return
+    fi
+    local expected_arc_path=$HOME/tools/bin/arc
+    if [[ $arc_path == "$expected_arc_path" ]]; then
+      # OK, this is where we install the arc wrapper.
+      return
+    fi
+
+    if grep -Eq "Wrapper for arcanist arc" "$arc_path"; then
+      # This seems to be a valid arc wrapper installed elsewhere.
+      return
+    fi
+
+    fatal "Not a valid arc wrapper: $arc_path (required for internal Yugabyte hosts)"
   fi
 }
 

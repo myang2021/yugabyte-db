@@ -156,8 +156,9 @@ public class UniverseCRUDHandler {
             UniverseDefinitionTaskParams.ExposingServiceState.UNEXPOSED;
       }
       if (c.userIntent.providerType.equals(Common.CloudType.onprem)) {
-        if (provider.getConfig().containsKey("USE_HOSTNAME")) {
-          c.userIntent.useHostname = Boolean.parseBoolean(provider.getConfig().get("USE_HOSTNAME"));
+        if (provider.getUnmaskedConfig().containsKey("USE_HOSTNAME")) {
+          c.userIntent.useHostname =
+              Boolean.parseBoolean(provider.getUnmaskedConfig().get("USE_HOSTNAME"));
         }
       }
 
@@ -737,7 +738,7 @@ public class UniverseCRUDHandler {
     boolean isNamespaceSet = false;
     for (Region r : Region.getByProvider(providerToCheck.uuid)) {
       for (AvailabilityZone az : AvailabilityZone.getAZsForRegion(r.uuid)) {
-        if (az.getConfig().containsKey("KUBENAMESPACE")) {
+        if (az.getUnmaskedConfig().containsKey("KUBENAMESPACE")) {
           isNamespaceSet = true;
         }
       }
@@ -1065,33 +1066,40 @@ public class UniverseCRUDHandler {
     UniverseDefinitionTaskParams universeDetails = universe.getUniverseDetails();
     UserIntent userIntent = universeDetails.getPrimaryCluster().userIntent;
 
-    boolean tlsToggle =
-        ((taskParams.enableNodeToNodeEncrypt != null
-                && taskParams.enableNodeToNodeEncrypt != userIntent.enableNodeToNodeEncrypt)
-            || (taskParams.enableClientToNodeEncrypt != null
-                && taskParams.enableClientToNodeEncrypt != userIntent.enableClientToNodeEncrypt));
-    boolean certsRotate =
-        ((taskParams.rootCA != null && !taskParams.rootCA.equals(universeDetails.rootCA))
-                || (taskParams.clientRootCA != null
-                    && !taskParams.clientRootCA.equals(universeDetails.clientRootCA)))
-            || taskParams.createNewRootCA
-            || taskParams.createNewClientRootCA;
-
     if (taskParams.rootAndClientRootCASame == null) {
       throw new PlatformServiceException(
           Status.BAD_REQUEST, "rootAndClientRootCASame cannot be null.");
     }
 
+    boolean nodeToNodeChange =
+        taskParams.enableNodeToNodeEncrypt != null
+            && taskParams.enableNodeToNodeEncrypt != userIntent.enableNodeToNodeEncrypt;
+    boolean clientToNodeChange =
+        taskParams.enableClientToNodeEncrypt != null
+            && taskParams.enableClientToNodeEncrypt != userIntent.enableClientToNodeEncrypt;
+    boolean tlsToggle = (nodeToNodeChange || clientToNodeChange);
+
+    boolean rootCaChange =
+        taskParams.rootCA != null && !taskParams.rootCA.equals(universeDetails.rootCA);
+    boolean clientRootCaChange =
+        !taskParams.rootAndClientRootCASame
+            && taskParams.clientRootCA != null
+            && !taskParams.clientRootCA.equals(universeDetails.clientRootCA);
+    boolean certsRotate =
+        rootCaChange
+            || clientRootCaChange
+            || taskParams.createNewRootCA
+            || taskParams.createNewClientRootCA;
+
     if (tlsToggle && certsRotate) {
-      if ((universeDetails.rootCA == null && taskParams.rootCA != null)
-          || (universeDetails.rootCA == null && taskParams.createNewRootCA)
-          || (universeDetails.clientRootCA == null && taskParams.clientRootCA != null)
-          || (universeDetails.clientRootCA == null && taskParams.createNewClientRootCA)) {
-        certsRotate = false;
-      } else {
+      if (((rootCaChange || taskParams.createNewRootCA) && universeDetails.rootCA != null)
+          || ((clientRootCaChange || taskParams.createNewClientRootCA)
+              && universeDetails.clientRootCA != null)) {
         throw new PlatformServiceException(
             Status.BAD_REQUEST,
             "Cannot enable/disable TLS along with cert rotation. Perform them individually.");
+      } else {
+        certsRotate = false;
       }
     }
 

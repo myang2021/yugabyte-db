@@ -39,12 +39,7 @@
 #include "access/tupdesc.h"
 #include "access/xact.h"
 #include "executor/ybcExpr.h"
-#include "utils/lsyscache.h"
-#include "utils/pg_locale.h"
-#include "utils/rel.h"
 #include "catalog/pg_authid.h"
-#include "catalog/pg_database.h"
-#include "utils/builtins.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_type.h"
@@ -532,7 +527,7 @@ YBCAbortTransaction()
 		return;
 
 	if (YBTransactionsEnabled())
-		HandleYBStatus(YBCPgAbortTransaction());
+		YBCPgAbortTransaction();
 }
 
 void
@@ -564,6 +559,33 @@ YBSetPreparingTemplates() {
 bool
 YBIsPreparingTemplates() {
 	return yb_preparing_templates;
+}
+
+Oid
+GetTypeId(int attrNum, TupleDesc tupleDesc)
+{
+	switch (attrNum)
+	{
+		case SelfItemPointerAttributeNumber:
+			return TIDOID;
+		case ObjectIdAttributeNumber:
+			return OIDOID;
+		case MinTransactionIdAttributeNumber:
+			return XIDOID;
+		case MinCommandIdAttributeNumber:
+			return CIDOID;
+		case MaxTransactionIdAttributeNumber:
+			return XIDOID;
+		case MaxCommandIdAttributeNumber:
+			return CIDOID;
+		case TableOidAttributeNumber:
+			return OIDOID;
+		default:
+			if (attrNum > 0 && attrNum <= tupleDesc->natts)
+				return TupleDescAttr(tupleDesc, attrNum - 1)->atttypid;
+			else
+				return InvalidOid;
+	}
 }
 
 const char*
@@ -941,6 +963,13 @@ YBIsInitDbAlreadyDone()
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static int ddl_nesting_level = 0;
 
+static void
+YBResetDdlState()
+{
+	ddl_nesting_level = 0;
+	YBCPgClearSeparateDdlTxnMode();
+}
+
 int
 YBGetDdlNestingLevel()
 {
@@ -958,20 +987,15 @@ YBIncrementDdlNestingLevel()
 }
 
 void
-YBDecrementDdlNestingLevel(bool success,
-                           bool is_catalog_version_increment,
-                           bool is_breaking_catalog_change)
+YBDecrementDdlNestingLevel(bool is_catalog_version_increment, bool is_breaking_catalog_change)
 {
 	ddl_nesting_level--;
 	if (ddl_nesting_level == 0)
 	{
-		bool increment_done = false;
-		if (success && is_catalog_version_increment)
-		{
-			increment_done = YbIncrementMasterCatalogVersionTableEntry(is_breaking_catalog_change);
-		}
+		const bool increment_done = is_catalog_version_increment &&
+			YbIncrementMasterCatalogVersionTableEntry(is_breaking_catalog_change);
 
-		HandleYBStatus(YBCPgExitSeparateDdlTxnMode(success));
+		HandleYBStatus(YBCPgExitSeparateDdlTxnMode());
 
 		/*
 		 * Optimization to avoid redundant cache refresh on the current session
@@ -985,28 +1009,25 @@ YBDecrementDdlNestingLevel(bool success,
 			yb_catalog_cache_version += 1;
 		}
 
-		if (success)
+		List *handles = YBGetDdlHandles();
+		ListCell *lc = NULL;
+		foreach(lc, handles)
 		{
-			List *handles = YBGetDdlHandles();
-			ListCell *lc = NULL;
-			foreach(lc, handles)
-			{
-				YBCPgStatement handle = (YBCPgStatement) lfirst(lc);
-				/*
-				 * At this point we have already applied the DDL in the YSQL layer and
-				 * executing the postponed DocDB statement is not strictly required.
-				 * Ignore 'NotFound' because DocDB might already notice applied DDL.
-				 * See comment for YBGetDdlHandles in xact.h for more details.
-				 */
-				YBCStatus status = YBCPgExecPostponedDdlStmt(handle);
-				if (YBCStatusIsNotFound(status)) {
-					YBCFreeStatus(status);
-				} else {
-					HandleYBStatusAtErrorLevel(status, WARNING);
-				}
+			YBCPgStatement handle = (YBCPgStatement) lfirst(lc);
+			/*
+			 * At this point we have already applied the DDL in the YSQL layer and
+			 * executing the postponed DocDB statement is not strictly required.
+			 * Ignore 'NotFound' because DocDB might already notice applied DDL.
+			 * See comment for YBGetDdlHandles in xact.h for more details.
+			 */
+			YBCStatus status = YBCPgExecPostponedDdlStmt(handle);
+			if (YBCStatusIsNotFound(status)) {
+				YBCFreeStatus(status);
+			} else {
+				HandleYBStatusAtErrorLevel(status, WARNING);
 			}
-			YBClearDdlHandles();
 		}
+		YBClearDdlHandles();
 	}
 }
 
@@ -1328,17 +1349,17 @@ static void YBTxnDdlProcessUtility(
 	PG_CATCH();
 	{
 		if (is_txn_ddl) {
-			YBDecrementDdlNestingLevel(/* success */ false,
-			                           is_catalog_version_increment,
-			                           is_breaking_catalog_change);
+			/*
+			 * It is possible that ddl_nesting_level has wrong value due to error.
+			 * Ddl transaction state should be reset.
+			 */
+			YBResetDdlState();
 		}
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 	if (is_txn_ddl) {
-		YBDecrementDdlNestingLevel(/* success */ true,
-		                           is_catalog_version_increment,
-		                           is_breaking_catalog_change);
+		YBDecrementDdlNestingLevel(is_catalog_version_increment, is_breaking_catalog_change);
 	}
 }
 
@@ -1559,6 +1580,27 @@ yb_catalog_version(PG_FUNCTION_ARGS)
 	uint64_t version;
 	YbGetMasterCatalogVersion(&version, true /* can_use_cache */);
 	PG_RETURN_UINT64(version);
+}
+
+Datum
+yb_is_local_table(PG_FUNCTION_ARGS)
+{
+	Oid tableOid = PG_GETARG_OID(0);
+
+	/* Fetch required info about the relation */
+	Relation relation = relation_open(tableOid, NoLock);
+	Oid tablespaceId = relation->rd_rel->reltablespace;
+	bool isTempTable =
+		(relation->rd_rel->relpersistence == RELPERSISTENCE_TEMP);
+	RelationClose(relation);
+
+	/* Temp tables are local. */
+	if (isTempTable)
+	{
+			PG_RETURN_BOOL(true);
+	}
+	GeolocationDistance distance = get_tablespace_distance(tablespaceId);
+	PG_RETURN_BOOL(distance == REGION_LOCAL || distance == ZONE_LOCAL);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -1876,4 +1918,8 @@ Oid YBEncodingCollation(YBCPgStatement handle, int attr_num, Oid attcollation) {
 
 bool IsYbExtensionUser(Oid member) {
 	return IsYugaByteEnabled() && has_privs_of_role(member, DEFAULT_ROLE_YB_EXTENSION);
+}
+
+bool IsYbFdwUser(Oid member) {
+	return IsYugaByteEnabled() && has_privs_of_role(member, DEFAULT_ROLE_YB_FDW);
 }

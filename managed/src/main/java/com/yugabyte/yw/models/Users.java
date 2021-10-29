@@ -7,8 +7,6 @@ import static play.mvc.Http.Status.BAD_REQUEST;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yugabyte.yw.common.PlatformServiceException;
 import io.ebean.DuplicateKeyException;
 import io.ebean.Finder;
@@ -30,7 +28,6 @@ import org.mindrot.jbcrypt.BCrypt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import play.data.validation.Constraints;
-import play.libs.Json;
 import play.mvc.Http.Status;
 import org.apache.directory.ldap.client.api.*;
 import org.apache.directory.api.ldap.model.exception.*;
@@ -135,10 +132,6 @@ public class Users extends Model {
   @Column(nullable = true)
   @ApiModelProperty(value = "User API token", accessMode = READ_ONLY)
   private String apiToken;
-
-  @Column(nullable = true, columnDefinition = "TEXT")
-  @ApiModelProperty(value = "UI_ONLY", hidden = true, accessMode = READ_ONLY)
-  private JsonNode features;
 
   // The role of the user.
   @Column(nullable = false)
@@ -456,29 +449,6 @@ public class Users extends Model {
   public void deleteAuthToken() {
     authToken = null;
     authTokenIssueDate = null;
-    save();
-  }
-
-  /** Get features for this Users. */
-  public JsonNode getFeatures() {
-    return features == null ? Json.newObject() : features;
-  }
-
-  /** Set features for this User. */
-  public void setFeatures(JsonNode input) {
-    this.features = input;
-  }
-
-  /**
-   * Upserts features for this Users. If updating a feature, only specified features will be
-   * updated.
-   */
-  public void upsertFeatures(JsonNode input) {
-    if (features == null) {
-      features = input;
-    } else {
-      ((ObjectNode) features).setAll((ObjectNode) input);
-    }
     save();
   }
 
