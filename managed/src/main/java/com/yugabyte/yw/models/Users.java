@@ -32,6 +32,13 @@ import org.slf4j.LoggerFactory;
 import play.data.validation.Constraints;
 import play.libs.Json;
 import play.mvc.Http.Status;
+import org.apache.directory.ldap.client.api.*;
+import org.apache.directory.api.ldap.model.exception.*;
+import org.apache.directory.api.ldap.model.cursor.EntryCursor;
+import org.apache.directory.api.ldap.model.entry.Entry;
+import org.apache.directory.api.ldap.model.message.SearchScope;
+import org.apache.directory.api.ldap.model.entry.Attribute;
+
 
 @Entity
 @ApiModel(description = "A user associated with a customer")
@@ -229,6 +236,14 @@ public class Users extends Model {
     return users;
   }
 
+  public static void deleteUser(String email) {
+    Users userToDelete = Users.find.query().where().eq("email", email).findOne();
+    if (userToDelete != null) {
+      userToDelete.delete();
+    }
+    return;
+  }
+
   /**
    * Validate if the email and password combination is valid, we use this to authenticate the Users.
    *
@@ -245,6 +260,103 @@ public class Users extends Model {
       return null;
     }
   }
+
+  /**
+   * Validate if the email and password is valid using client's LDAP server, we use this to authenticate the Users.
+   * 
+   * @param email
+   * @param password
+   * @param ldapUrl
+   * @param ldapBaseDN
+   * @return Temporary user not yet saved in DB (Dynamic user generation)
+   */
+
+
+  public static Users authWithLDAP(String email, String password, String ldapUrl, Integer ldapPort, String ldapBaseDN) {
+    String[] parseEmail = email.split("@", 2);
+    String username = parseEmail[0];
+    Users users = new Users();
+
+    try {
+      LdapNetworkConnection connection = new LdapNetworkConnection(ldapUrl, ldapPort);
+      String distinguishedName = "CN="+username+ldapBaseDN;
+
+      try {
+        connection.bind(distinguishedName, password);
+      }
+      catch (LdapNoSuchObjectException e) {
+        deleteUser(email);
+        return null;
+      }
+
+      EntryCursor cursor = connection.search(distinguishedName, "(objectclass=*)", SearchScope.SUBTREE, "*");
+
+      while (cursor.next()) {
+        Entry entry = cursor.get();
+        Attribute parsePassword = entry.get("password");
+        String pass = parsePassword.getString();
+
+        Attribute parseRole = entry.get("YugabytePlatformRole");
+        String role = parseRole.getString();
+        Role roleToAssign;
+
+        switch (role) {
+          case "Admin":
+            roleToAssign = Role.Admin;
+            break;
+          case "SuperAdmin":
+            roleToAssign = Role.SuperAdmin;  
+            break;
+          case "BackupAdmin":
+            roleToAssign = Role.BackupAdmin;  
+            break;
+          default:
+            roleToAssign = Role.ReadOnly;
+        }
+
+        if (!pass.equals(password)) {
+          connection.unBind();
+          connection.close();
+          return null;
+        }
+
+        Date oldCreationDate = null;
+        UUID oldCustomerUUID = null;
+        boolean oldIsPrimary = true;
+        Users oldUser = Users.find.query().where().eq("email", email).findOne();
+
+        if (oldUser != null && (!BCrypt.checkpw(pass, oldUser.passwordHash) || oldUser.getRole() != roleToAssign)) {
+          oldCreationDate = oldUser.creationDate;
+          oldIsPrimary = oldUser.getIsPrimary();
+          oldCustomerUUID = oldUser.customerUUID;
+          deleteUser(email);
+        }
+        else if (oldUser != null && pass.equals(password)) {
+          return oldUser;
+        }
+
+        users.email = email.toLowerCase();
+        users.setPassword(password);
+        users.creationDate = (oldCreationDate == null) ? new Date() : oldCreationDate;
+        users.isPrimary = oldIsPrimary;
+        users.role = roleToAssign;
+        if (oldCustomerUUID != null) {
+          users.setCustomerUuid(oldCustomerUUID);
+        }
+      }
+      connection.unBind();
+      connection.close();
+  }
+    catch (LdapException e) {
+      System.out.println("LDAP Paramenters are configured incorrectly");
+      return null;
+    }
+    catch (Exception e) {
+      return null;
+    }
+    return users;
+  }
+
 
   /**
    * Validate if the email and password combination is valid, we use this to authenticate the Users.

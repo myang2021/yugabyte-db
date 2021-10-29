@@ -33,6 +33,8 @@ import com.yugabyte.yw.common.ValidatingFormFactory;
 import com.yugabyte.yw.common.alerts.AlertConfigurationService;
 import com.yugabyte.yw.common.alerts.AlertDestinationService;
 import com.yugabyte.yw.common.config.RuntimeConfigFactory;
+import com.yugabyte.yw.common.config.impl.RuntimeConfig;
+import com.yugabyte.yw.common.config.impl.SettableRuntimeConfigFactory;
 import com.yugabyte.yw.common.password.PasswordPolicyService;
 import com.yugabyte.yw.controllers.handlers.SessionHandler;
 import com.yugabyte.yw.forms.CustomerLoginFormData;
@@ -109,6 +111,7 @@ import play.mvc.Http.Cookie;
 import play.mvc.Result;
 import play.mvc.Results;
 import play.mvc.With;
+import com.yugabyte.yw.controllers.RuntimeConfController;
 
 @Api(value = "Session management")
 @Slf4j
@@ -139,6 +142,8 @@ public class SessionController extends AbstractPlatformController {
   @Inject private AlertDestinationService alertDestinationService;
 
   @Inject private RuntimeConfigFactory runtimeConfigFactory;
+
+  @Inject private SettableRuntimeConfigFactory sConfigFactory;
 
   @Inject private HttpExecutionContext ec;
 
@@ -286,6 +291,8 @@ public class SessionController extends AbstractPlatformController {
   @ApiOperation(value = "UI_ONLY", hidden = true)
   public Result login() {
     boolean useOAuth = appConfig.getBoolean("yb.security.use_oauth", false);
+    boolean useLdap = runtimeConfigFactory.globalRuntimeConf().getBoolean("yb.security.use_ldap");
+  
     if (useOAuth) {
       throw new PlatformServiceException(
           BAD_REQUEST, "Platform login not supported when using SSO.");
@@ -293,8 +300,77 @@ public class SessionController extends AbstractPlatformController {
 
     CustomerLoginFormData data =
         formFactory.getFormDataOrBadRequest(CustomerLoginFormData.class).get();
-    Users user = Users.authWithPassword(data.getEmail().toLowerCase(), data.getPassword());
+    
+    Users user = new Users();
 
+    user = Users.authWithPassword(data.getEmail().toLowerCase(), data.getPassword());
+    String specialCaseAdmin = "admin";
+  
+    if (useLdap && !specialCaseAdmin.equals(data.getEmail().toLowerCase())) {
+      // Setting runtime config, when data from the UI can be set
+      Map<String, String> configKeysMap = new HashMap<>();
+      configKeysMap.put("LDAP_URL", "0.0.0.0");
+      configKeysMap.put("LDAP_PORT", "5099");
+      configKeysMap.put("LDAP_BASEDN", "");
+      configKeysMap.put("LDAP_CUSTOMER_UUID", "");
+
+      configKeysMap.forEach(
+        (key, value) -> {
+          sConfigFactory.globalRuntimeConf().setValue(key, value);
+        });
+
+      String ldapUrl = sConfigFactory.globalRuntimeConf().getString("LDAP_URL");
+      String getLdapPort = sConfigFactory.globalRuntimeConf().getString("LDAP_PORT");
+      Integer ldapPort = Integer.parseInt(getLdapPort);
+      String ldapBaseDN = sConfigFactory.globalRuntimeConf().getString("LDAP_BASEDN");
+      String ldapCustomerUUID = sConfigFactory.globalRuntimeConf().getString("LDAP_CUSTOMER_UUID");
+
+  
+      user = Users.authWithLDAP(data.getEmail().toLowerCase(), data.getPassword(), ldapUrl, ldapPort, ldapBaseDN);
+
+      List<Customer> allCustomers = Customer.getAll();
+      if (allCustomers.size() != 1) {
+        throw new PlatformServiceException(
+            UNAUTHORIZED, "Cannot allow insecure with multiple customers.");
+      }
+
+      if (user == null) {
+        throw new PlatformServiceException(UNAUTHORIZED, "Invalid User Credentials");
+      }
+
+      if (user.customerUUID == null) {
+        String[] parseEmail = data.getEmail().toLowerCase().split("@", 2);
+        String username = parseEmail[0];
+
+        Customer cust = new Customer();
+
+        if (!ldapCustomerUUID.equals("")) {
+          try {
+            UUID custUUID = UUID.fromString(ldapCustomerUUID);
+            cust = Customer.get(custUUID);
+          }
+          catch (Exception e) {
+            cust = allCustomers.get(0);
+            System.out.println("UUID is not configured correctly. Defaulting to base customer instead.");
+          }
+        } 
+        else {
+          cust = allCustomers.get(0);
+        }
+
+        passwordPolicyService.checkPasswordPolicy(cust.getUuid(), data.getPassword());
+ 
+        user.setCustomerUuid(cust.uuid);
+      } 
+
+      try {
+        user.save();
+      }
+      catch (Exception e) {
+        System.out.println("User already exists.");
+      }
+    }
+    
     if (user == null) {
       throw new PlatformServiceException(UNAUTHORIZED, "Invalid User Credentials");
     }

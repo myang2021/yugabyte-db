@@ -184,6 +184,10 @@ public class UsersController extends AuthenticatedController {
         paramType = "body")
   })
   public Result changePassword(UUID customerUUID, UUID userUUID) {
+    boolean useLdap = runtimeConfigFactory.globalRuntimeConf().getBoolean("yb.ldapconfig.use_ldap");
+    if (useLdap) {
+      throw new PlatformServiceException(BAD_REQUEST, "Cannot change password when LDAP is configured.");
+    }
     Customer.getOrBadRequest(customerUUID);
     Users user = Users.getOrBadRequest(userUUID);
     if (!user.customerUUID.equals(customerUUID)) {
